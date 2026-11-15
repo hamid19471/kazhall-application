@@ -1,0 +1,92 @@
+/*
+ * Print rules for the till.
+ *
+ * Receipt printing is BROWSER printing: `window.print()` plus this stylesheet.
+ * There is no printer driver, no ESC/POS escape codes and no hardware
+ * dependency — the shop uses whatever printer the operating system already
+ * offers, thermal roll or A4 alike, which is why the slip is a narrow,
+ * single-column document with no fixed page size.
+ *
+ * Plain CSS on purpose: this file is NOT a Tailwind entry point (it must not
+ * re-import the framework), it only overrides what the screen styles do.
+ * `.kz-chrome` marks the parts of the interface that exist for the operator and
+ * must never reach paper: the app header, navigation, buttons and notices.
+ */
+
+@media print {
+  /* Colour-managed printing: keep the tokens' meaning, drop their cost. */
+  :root {
+    --kz-canvas: #ffffff;
+    --kz-surface: #ffffff;
+    --kz-surface-muted: #ffffff;
+    --kz-ink: #000000;
+    --kz-ink-muted: #333333;
+    --kz-ink-subtle: #555555;
+    --kz-line: #999999;
+    --kz-shadow-soft: none;
+    --kz-shadow-raised: none;
+  }
+
+  @page {
+    margin: 10mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Operator-only chrome never reaches paper. */
+  .kz-chrome,
+  nav,
+  button {
+    display: none !important;
+  }
+
+  /* The slip itself: full width, no decoration, never split mid-row. */
+  .kz-receipt {
+    border: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+
+  .kz-receipt table {
+    width: 100%;
+  }
+
+  .kz-receipt tr,
+  .kz-receipt img {
+    break-inside: avoid;
+  }
+
+  .kz-receipt thead {
+    display: table-header-group;
+  }
+
+  /*
+   * The slip is typeset in Yekan Bakh like the rest of the till — the face is
+   * self-hosted and already loaded by the time the operator hits print, so the
+   * paper matches the screen. `tabular-nums` drives the font's `tnum` feature,
+   * which has fixed-width digits for Persian, Arabic-Indic AND ASCII numerals;
+   * without it a price column on paper staggers, because the proportional `۱`
+   * is far narrower than `۸`.
+   */
+  .kz-receipt {
+    font-family: var(--kz-font-sans);
+  }
+
+  .kz-receipt td,
+  .kz-receipt th,
+  .kz-receipt [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A printed slip has no hyperlinks; showing their URLs is noise. */
+  a[href]::after {
+    content: none !important;
+  }
+}

@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+/*
+ * Shared design tokens, RTL base layer and Persian typography.
+ * Lives in `packages/ui` and is wired by RELATIVE PATH — the package is not a
+ * dependency of this app (that would change pnpm-lock.yaml), it is compiled from
+ * source via the tsconfig `paths` entries for `@kazhal/ui`.
+ */
+@import "../../../packages/ui/src/styles/tokens.css";
+
+/*
+ * Tailwind v4 auto-detects sources relative to this stylesheet's own project, so
+ * class names used inside `packages/ui` would be tree-shaken away without this.
+ */
+@source "../../../packages/ui/src";
+
+/* Shimmer sweeps toward the inline-start edge, i.e. leftward in this RTL app. */
+:root {
+  --kz-shimmer-dir: left;
+}

@@ -1,0 +1,87 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+# pnpm's local content-addressable store. A reviewer running `pnpm install`
+# with a repo-local store would otherwise offer thousands of package files as
+# untracked changes. Ignoring it does NOT delete anyone's store.
+.pnpm-store/
+
+# Local env files
+.env
+.env.local
+.env.production
+# Local review/integration connection config. Contains throwaway local
+# credentials for the disposable `kazhal-review` PostgreSQL and must never
+# be committed. See docs/REVIEW-DATABASE.md.
+.env.*.local
+.env.review.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Testing
+coverage
+
+# Turbo
+.turbo
+
+# Vercel
+.vercel
+
+# Build Outputs
+.next/
+.next-*/
+out/
+build
+dist
+
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local editor state. `.vscode/settings.json` in this repo is one developer's
+# window tinting (`workbench.colorCustomizations`) — a personal preference, not
+# shared project configuration. Commit a shared config deliberately if one is
+# ever wanted; do not let this one ride along.
+.vscode/
+
+# Stray archives. `apps/api/src/srccccccc.zip` — 95 KB of zipped source — was
+# committed once because nothing stopped it, and it sat inside the NestJS
+# compile root. This rule is why it cannot happen again.
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# COMMERCIAL FONT BINARIES — deliberately NOT in this repository.
+#
+# Yekan Bakh is all-rights-reserved software whose own embedded licence record
+# says "To use this font, it is necessary to obtain the license from
+# www.fontiran.com", and this project makes no claim to hold that licence. Its
+# .woff2 files are therefore excluded from version control while
+# `packages/ui/fonts/README.md` — which IS committed — records the exact files,
+# their SHA-256 hashes, the licence position and where they must be placed.
+#
+# CONSEQUENCE: none for the build. The typeface is layered. `Vazirmatn`
+# (SIL OFL 1.1) is committed under `packages/ui/fonts/vazirmatn/` and is what
+# `next/font/local` loads in both root layouts, so a fresh clone builds and
+# renders correct Persian with no licensed asset present. Yekan Bakh is layered
+# on top by plain `@font-face` rules pointing at `/fonts/*.woff2` in each app's
+# `public/fonts/` — a root-relative URL the bundler never resolves, so absent
+# files cost a 404 and nothing more. A licensee drops the four files in and the
+# brand face appears with no code change.
+#
+# The first pattern is NOT recursive: `*` does not cross `/`, so it catches
+# `packages/ui/fonts/YekanBakh-*.woff2` while leaving the committed
+# `packages/ui/fonts/vazirmatn/*.woff2` alone. That is load-bearing.
+packages/ui/fonts/*.woff2
+apps/*/public/fonts/
+
+# Misc
+.DS_Store
+*.pem

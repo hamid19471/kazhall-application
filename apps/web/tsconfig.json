@@ -1,0 +1,47 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    // `lib/*.test.ts` imports its subject with an explicit `.ts` extension,
+    // because Node's built-in test runner resolves real paths and this package
+    // has no bundler in that path. Safe here precisely because `noEmit` is on:
+    // the flag only permits the syntax, and nothing is ever emitted from it.
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"],
+      "@kazhal/api-client": ["../../packages/api-client/src/index.ts"],
+      "@kazhal/api-client/*": ["../../packages/api-client/src/*"],
+      "@kazhal/ui": ["../../packages/ui/src/index.ts"],
+      "@kazhal/ui/*": ["../../packages/ui/src/*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts",
+    "../../packages/api-client/src/**/*.ts",
+    "../../packages/api-client/src/**/*.tsx",
+    "../../packages/ui/src/**/*.ts",
+    "../../packages/ui/src/**/*.tsx"
+  ],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,478 @@
+/*
+ * Kazhal design tokens + RTL base styles.
+ *
+ * Imported by `apps/web/app/globals.css` and `apps/store/app/globals.css` after
+ * `@import "tailwindcss"`, so the `@theme` block below turns every token into a
+ * Tailwind utility (`bg-canvas`, `text-ink-muted`, `rounded-lg`, `shadow-soft`…).
+ *
+ * DIRECTION
+ * ---------
+ * Both apps are Persian and RTL (`<html lang="fa" dir="rtl">`). Everything here
+ * uses CSS LOGICAL properties — `margin-inline`, `padding-block`,
+ * `inset-inline-start`, `border-start-start-radius`, `text-align: start` — never
+ * left/right. Tailwind v4's logical utilities (`ms-*`, `me-*`, `ps-*`, `pe-*`,
+ * `start-*`, `end-*`, `text-start`, `text-end`) are the only ones components
+ * should use; `ml-*`, `pr-*`, `left-*`, `text-left` will silently break in RTL.
+ *
+ * TYPOGRAPHY
+ * ----------
+ * TWO faces, in a deliberate order, because one of them cannot be committed.
+ *
+ *  1. `Vazirmatn` — the BASELINE. SIL OFL 1.1, redistributable, so the four
+ *     weights live in `packages/ui/fonts/vazirmatn/` and ARE in this repo.
+ *     Loaded by `next/font/local` in each root layout, published as
+ *     `--kz-font-vazirmatn`. Because the files are always present, `next build`
+ *     always succeeds — `next/font/local` resolves its `path` at COMPILE time
+ *     and a missing file is a build error, not a blank page.
+ *  2. `Yekan Bakh` — the BRAND face, and commercial software this project does
+ *     not hold a licence to redistribute. Its binaries are gitignored. It is
+ *     layered on top by the plain `@font-face` block below, which points at
+ *     ROOT-RELATIVE `/fonts/*.woff2` URLs served out of each app's `public/`.
+ *     A root-relative `url()` is not resolved by the bundler, so the build does
+ *     not care whether the files exist; when they are absent the browser simply
+ *     404s that family and CSS font matching falls through to Vazirmatn.
+ *
+ * Net effect: a clean clone builds and renders correct Persian on Vazirmatn; a
+ * licensed deployment drops four files into `public/fonts/` and gets the brand
+ * face, with no code change. Nothing is fetched from Google Fonts or any CDN at
+ * build or run time either way. See `packages/ui/fonts/README.md`.
+ *
+ * Weights shipped: 400, 600, 700, 900 — every one a real file in BOTH faces, so
+ * the browser never synthesises a bold. `font-medium` (500) resolves down to
+ * 400 and `font-extrabold` (800) resolves up to 900 by normal CSS font matching.
+ *
+ * `ss01` — READ BEFORE RE-ENABLING GLOBALLY. The two faces do NOT agree on what
+ * this feature means:
+ *
+ *   | input        | Yekan Bakh ss01 | Vazirmatn ss01 |
+ *   | ٠١٢٣ → ۰۱۲۳  | yes             | yes            |
+ *   | ASCII 0123   | LEFT ALONE      | → ۰۱۲۳ REWRITTEN  |
+ *
+ * Verified with fontTools against both sets of binaries. Turning `ss01` on
+ * unconditionally would therefore rewrite every ASCII digit in the product —
+ * prices, order numbers, SKUs, phone numbers — into Persian digits on any build
+ * running the Vazirmatn baseline, and the two builds would disagree. So it is
+ * applied ONLY under `:root[data-brand-font="yekan-bakh"]`, an attribute each
+ * root layout sets from `NEXT_PUBLIC_BRAND_FONT`. Default: off.
+ *
+ * `ss02` and `ss03` must stay OFF in Yekan Bakh — they swap ک→ڪ and ی→ے,
+ * which are wrong for Persian. Vazirmatn's `salt` (K→K.alt, g→g.alt) is Latin
+ * decoration and is likewise left off.
+ *
+ * COLOR
+ * -----
+ * An outdoor / adventure-gear palette, matching the real Kazhal business
+ * (کوهنوردی، شکار، کمپینگ و آفرود، ماهیگیری): cool stone neutrals, a deep pine
+ * primary, and a gear-ochre accent used sparingly. Not a dashboard grey, and
+ * deliberately not the warm cosmetics palette this file first shipped with —
+ * the owner confirmed the domain is outdoor equipment.
+ *
+ * Every foreground / background pair below clears WCAG AA (4.5:1 for text,
+ * 3:1 for UI edges); the primary (#1E5945) sits at 8.17:1 against white, so it
+ * works as button fill AND as body-weight link text. The accent (#B4651A) is
+ * 4.36:1 on white — hairlines, icons and large text ONLY, never body copy.
+ */
+
+:root {
+  /* --- brand & surface ------------------------------------------------- */
+  --kz-canvas: #f5f7f4; /* cool stone — the page */
+  --kz-surface: #ffffff; /* cards, sheets */
+  --kz-surface-muted: #eceee9; /* inset panels, table stripes */
+  --kz-surface-sunken: #e2e6e0;
+
+  --kz-ink: #1b2320; /* body text — ~15:1 on canvas */
+  --kz-ink-muted: #566259; /* secondary text — ~6.3:1 */
+  --kz-ink-subtle: #667065; /* meta text — 4.79:1, never below 14px */
+  --kz-ink-inverse: #f7faf8;
+
+  --kz-line: #e7dcd4; /* hairlines */
+  --kz-line-strong: #d6c6bc; /* input borders — 3:1 against surface */
+
+  --kz-primary: #1e5945; /* deep pine */
+  --kz-primary-hover: #18493a;
+  --kz-primary-active: #133a2e;
+  --kz-primary-soft: #e7f0eb; /* tinted fill */
+  --kz-primary-ink: #ffffff;
+
+  --kz-accent: #b4651a; /* gear ochre — 4.36:1 on white: hairlines, icons and
+                          large text ONLY, never body copy */
+  --kz-accent-soft: #f7ecdf;
+
+  --kz-success: #2f6b4f;
+  --kz-success-soft: #e8f2ec;
+  --kz-warning: #8a5a0b;
+  --kz-warning-soft: #fbf0dc;
+  --kz-danger: #a32b25;
+  --kz-danger-soft: #fbeae8;
+  --kz-info: #2c5c82;
+  --kz-info-soft: #e8f0f6;
+
+  /* Focus ring. High contrast against every surface token above. */
+  --kz-focus: #1e5945;
+  --kz-focus-contrast: #ffffff;
+
+  /* --- typography ------------------------------------------------------ */
+  /* `Yekan Bakh` first: when the licensed files are present in `public/fonts/`
+     the @font-face block below defines it and it wins. When they are absent the
+     family resolves to nothing and matching falls straight through to the
+     Vazirmatn baseline, which is always in the bundle. The named families after
+     it cover the case where BOTH are unavailable (a route rendered outside the
+     root layout, so `--kz-font-vazirmatn` is unset). */
+  --kz-font-sans:
+    "Yekan Bakh", var(--kz-font-vazirmatn), "Vazirmatn", "IRANSansX", "Segoe UI",
+    "Noto Sans Arabic", "Geeza Pro", Tahoma, system-ui, -apple-system, sans-serif;
+  /* Same faces, same order: both Yekan Bakh and Vazirmatn carry `tnum`, so
+     prices, SKUs, quantities and report figures get real tabular digits instead
+     of a third family whose Persian glyphs would not match the body copy. */
+  --kz-font-numeric:
+    "Yekan Bakh", var(--kz-font-vazirmatn), "Vazirmatn", "IRANSansX", "Segoe UI",
+    "Noto Sans Arabic", "Geeza Pro", Tahoma, system-ui, sans-serif;
+  --kz-font-mono: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+
+  /* Fluid type scale, ~1.2 ratio. Persian glyphs sit taller than Latin, so the
+     line-heights are deliberately looser than a Latin scale would use. */
+  --kz-text-2xs: 0.6875rem; /* 11px — legal/meta only */
+  --kz-text-xs: 0.75rem;
+  --kz-text-sm: 0.875rem;
+  --kz-text-base: 1rem;
+  --kz-text-lg: 1.125rem;
+  --kz-text-xl: 1.3125rem;
+  --kz-text-2xl: clamp(1.5rem, 1.3rem + 0.9vw, 1.75rem);
+  --kz-text-3xl: clamp(1.875rem, 1.55rem + 1.4vw, 2.25rem);
+  --kz-text-display: clamp(2.25rem, 1.7rem + 2.4vw, 3.25rem);
+
+  --kz-leading-tight: 1.35;
+  --kz-leading-snug: 1.55;
+  --kz-leading-normal: 1.85; /* Persian body copy needs the air */
+
+  /* --- space (4px base) ------------------------------------------------ */
+  --kz-space-1: 0.25rem;
+  --kz-space-2: 0.5rem;
+  --kz-space-3: 0.75rem;
+  --kz-space-4: 1rem;
+  --kz-space-5: 1.25rem;
+  --kz-space-6: 1.5rem;
+  --kz-space-8: 2rem;
+  --kz-space-10: 2.5rem;
+  --kz-space-12: 3rem;
+  --kz-space-16: 4rem;
+  --kz-space-24: 6rem;
+
+  /* --- radii ----------------------------------------------------------- */
+  --kz-radius-xs: 0.25rem;
+  --kz-radius-sm: 0.375rem;
+  --kz-radius-md: 0.625rem;
+  --kz-radius-lg: 1rem;
+  --kz-radius-xl: 1.5rem;
+  --kz-radius-pill: 999px;
+
+  /* --- elevation (warm-tinted, never neutral grey) --------------------- */
+  --kz-shadow-soft: 0 1px 2px rgb(65 40 35 / 0.04), 0 4px 16px rgb(65 40 35 / 0.06);
+  --kz-shadow-raised: 0 2px 4px rgb(65 40 35 / 0.05), 0 12px 32px rgb(65 40 35 / 0.1);
+  --kz-shadow-focus: 0 0 0 3px rgb(158 59 74 / 0.28);
+
+  --kz-duration-fast: 120ms;
+  --kz-duration-base: 200ms;
+  --kz-ease: cubic-bezier(0.2, 0, 0.1, 1);
+}
+
+/*
+ * Dark theme. Costs nothing beyond re-pointing the same token names, so it is
+ * included, but the apps are LIGHT-FIRST: nothing sets `data-theme="dark"` yet,
+ * and `prefers-color-scheme` alone drives it.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --kz-canvas: #121815;
+    --kz-surface: #1a211e;
+    --kz-surface-muted: #232b27;
+    --kz-surface-sunken: #0e1310;
+
+    --kz-ink: #e9f0ec;
+    --kz-ink-muted: #adbab2;
+    --kz-ink-subtle: #869287;
+    --kz-ink-inverse: #101815;
+
+    --kz-line: #3a2e2c;
+    --kz-line-strong: #52413e;
+
+    --kz-primary: #6fbf9b;
+    --kz-primary-hover: #86cfae;
+    --kz-primary-active: #5aa887;
+    --kz-primary-soft: #1e3229;
+    --kz-primary-ink: #10201a;
+
+    --kz-accent: #d99a5b;
+    --kz-accent-soft: #33261a;
+
+    --kz-success: #79c79c;
+    --kz-success-soft: #1d2f26;
+    --kz-warning: #e0ae5e;
+    --kz-warning-soft: #33270f;
+    --kz-danger: #f08a83;
+    --kz-danger-soft: #33201e;
+    --kz-info: #86b6dc;
+    --kz-info-soft: #1b2833;
+
+    --kz-focus: #86cfae;
+    --kz-focus-contrast: #121815;
+
+    --kz-shadow-soft: 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 16px rgb(0 0 0 / 0.35);
+    --kz-shadow-raised: 0 2px 4px rgb(0 0 0 / 0.35), 0 12px 32px rgb(0 0 0 / 0.45);
+    --kz-shadow-focus: 0 0 0 3px rgb(240 161 170 / 0.3);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/*
+ * Expose every token to Tailwind v4 so components can write `bg-surface`,
+ * `text-ink-muted`, `rounded-lg`, `shadow-soft`, `font-sans` and so on.
+ */
+@theme inline {
+  --color-canvas: var(--kz-canvas);
+  --color-surface: var(--kz-surface);
+  --color-surface-muted: var(--kz-surface-muted);
+  --color-surface-sunken: var(--kz-surface-sunken);
+
+  --color-ink: var(--kz-ink);
+  --color-ink-muted: var(--kz-ink-muted);
+  --color-ink-subtle: var(--kz-ink-subtle);
+  --color-ink-inverse: var(--kz-ink-inverse);
+
+  --color-line: var(--kz-line);
+  --color-line-strong: var(--kz-line-strong);
+
+  --color-primary: var(--kz-primary);
+  --color-primary-hover: var(--kz-primary-hover);
+  --color-primary-active: var(--kz-primary-active);
+  --color-primary-soft: var(--kz-primary-soft);
+  --color-primary-ink: var(--kz-primary-ink);
+
+  --color-accent: var(--kz-accent);
+  --color-accent-soft: var(--kz-accent-soft);
+
+  --color-success: var(--kz-success);
+  --color-success-soft: var(--kz-success-soft);
+  --color-warning: var(--kz-warning);
+  --color-warning-soft: var(--kz-warning-soft);
+  --color-danger: var(--kz-danger);
+  --color-danger-soft: var(--kz-danger-soft);
+  --color-info: var(--kz-info);
+  --color-info-soft: var(--kz-info-soft);
+
+  --font-sans: var(--kz-font-sans);
+  --font-mono: var(--kz-font-mono);
+
+  --text-2xs: var(--kz-text-2xs);
+  --text-xs: var(--kz-text-xs);
+  --text-sm: var(--kz-text-sm);
+  --text-base: var(--kz-text-base);
+  --text-lg: var(--kz-text-lg);
+  --text-xl: var(--kz-text-xl);
+  --text-2xl: var(--kz-text-2xl);
+  --text-3xl: var(--kz-text-3xl);
+  --text-display: var(--kz-text-display);
+
+  --radius-xs: var(--kz-radius-xs);
+  --radius-sm: var(--kz-radius-sm);
+  --radius-md: var(--kz-radius-md);
+  --radius-lg: var(--kz-radius-lg);
+  --radius-xl: var(--kz-radius-xl);
+  --radius-pill: var(--kz-radius-pill);
+
+  --shadow-soft: var(--kz-shadow-soft);
+  --shadow-raised: var(--kz-shadow-raised);
+
+  --ease-kz: var(--kz-ease);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Brand face overlay — OPTIONAL, licensed, never committed                  */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Yekan Bakh. These four declarations are the ONLY reason the brand face can be
+ * absent from the repository without breaking the build.
+ *
+ * Why plain `@font-face` and not `next/font/local` like Vazirmatn: `next/font`
+ * is a compile-time transform that resolves each `path` through the module
+ * graph, so a missing file fails `next build` outright. A ROOT-RELATIVE `url()`
+ * is different — no bundler resolves it, it is handed to the browser verbatim.
+ * Absent files therefore cost a 404 and nothing else, and CSS font matching
+ * moves on to the next family in `--kz-font-sans`.
+ *
+ * The files are served from each app's own `public/fonts/` (so `/fonts/x.woff2`
+ * resolves per-app) and that directory is gitignored. Installing them is the
+ * licensee's step; see `packages/ui/fonts/README.md`.
+ *
+ * `font-display: swap` matches the Vazirmatn loader, so the two faces behave
+ * the same during load. There is no `size-adjust` here: Next's
+ * `adjustFontFallback` already metric-matches the Vazirmatn baseline, and
+ * hand-tuning a second adjustment against a font that may not exist would be
+ * guesswork.
+ */
+@font-face {
+  font-family: "Yekan Bakh";
+  src: url("/fonts/YekanBakh-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Yekan Bakh";
+  src: url("/fonts/YekanBakh-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Yekan Bakh";
+  src: url("/fonts/YekanBakh-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Yekan Bakh";
+  src: url("/fonts/YekanBakh-Black.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Base layer                                                                */
+/* ------------------------------------------------------------------------ */
+
+@layer base {
+  html {
+    /* Next 16 no longer overrides `scroll-behavior` during navigation unless
+       `data-scroll-behavior="smooth"` is on <html>; both layouts set it. */
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--kz-canvas);
+    color: var(--kz-ink);
+    font-family: var(--kz-font-sans);
+    font-size: var(--kz-text-base);
+    line-height: var(--kz-leading-normal);
+    /* NOTE: `ss01` is deliberately NOT set here. It means different things in
+       the two faces and would rewrite ASCII digits under the Vazirmatn
+       baseline; it is applied in the gated rule below instead. See the `ss01`
+       table in this file's header. */
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+   * Arabic-Indic → Persian digit normalisation, brand face only.
+   *
+   * Under Yekan Bakh `ss01` rewrites ٠١٢٣ to ۰۱۲۳ and leaves ASCII alone.
+   * Under Vazirmatn the same tag ALSO rewrites ASCII 0-9, which would turn every
+   * price and order number Persian and make the two builds disagree. The
+   * attribute is set by each root layout only when `NEXT_PUBLIC_BRAND_FONT` says
+   * the licensed files are installed, so this never fires on a clean clone.
+   */
+  :root[data-brand-font="yekan-bakh"] body {
+    font-feature-settings: "ss01" on;
+  }
+
+  /* Direction-agnostic default. Both root layouts set dir="rtl". */
+  [dir="rtl"] body {
+    text-align: start;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    line-height: var(--kz-leading-tight);
+    font-weight: 700;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  a {
+    color: var(--kz-primary);
+    text-underline-offset: 0.25em;
+  }
+
+  /* One visible, consistent focus ring everywhere. Never remove it. */
+  :focus-visible {
+    outline: 2px solid var(--kz-focus);
+    outline-offset: 2px;
+    border-radius: var(--kz-radius-xs);
+  }
+
+  ::selection {
+    background-color: var(--kz-primary-soft);
+    color: var(--kz-ink);
+  }
+
+  /* Numbers, prices, SKUs and phone numbers must stay LTR inside RTL text. */
+  [data-numeric],
+  bdi[data-numeric] {
+    font-family: var(--kz-font-numeric);
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Visually hidden but available to screen readers and to focus. */
+  .kz-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  .kz-shimmer {
+    background-image: linear-gradient(
+      to var(--kz-shimmer-dir, left),
+      var(--kz-surface-muted) 0%,
+      var(--kz-surface-sunken) 40%,
+      var(--kz-surface-muted) 80%
+    );
+    background-size: 300% 100%;
+    animation: kz-shimmer 1.4s var(--kz-ease) infinite;
+  }
+
+  @keyframes kz-shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
+}

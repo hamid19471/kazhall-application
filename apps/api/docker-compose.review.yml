@@ -1,0 +1,99 @@
+# ===========================================================================
+# LOCAL DEVELOPMENT / INDEPENDENT-REVIEW OVERRIDE
+#
+#   docker compose -p kazhal-review \
+#     -f docker-compose.yml -f docker-compose.review.yml up -d
+#
+# This file is an OVERRIDE on top of the project's real docker-compose.yml. It
+# changes three things and nothing else:
+#
+#   1. PORTS. The base file publishes 5432, 6379 and 9000/9001 on every
+#      interface. On this machine all four are already taken -- 5432/6379 by a
+#      native Homebrew PostgreSQL/Redis holding the developer's own data, and
+#      9000/9001 by an unrelated project's MinIO container. `up` against the
+#      base file alone therefore fails outright, and the fix must never be to
+#      stop somebody else's service. Every port here is remapped to a free
+#      number and bound to 127.0.0.1 so nothing is reachable off-host.
+#
+#   2. CONTAINER NAMES. The base file pins `kazhal-postgres` etc. Container
+#      names are global, not per-project, so leaving them would make this stack
+#      and a future default-project stack mutually exclusive.
+#
+#   3. CREDENTIALS + MARKER. Throwaway review credentials, plus an initdb
+#      script that stamps the server as disposable (see
+#      docker/review-initdb/00-disposable-marker.sql). The integration
+#      harness's external mode refuses to touch a server without that stamp.
+#
+# ISOLATION. Run it under the `kazhal-review` project name (-p) as shown. Named
+# volumes are namespaced by project, so this stack's data lives in
+# `kazhal-review_postgres-data` and can never be confused with -- or reuse --
+# a volume belonging to the default project or to any other stack.
+#
+# The `!override` tag replaces the base list instead of appending to it;
+# without it Compose would merge both port lists and try to bind 5432 again.
+# ===========================================================================
+
+# THE CANONICAL LOCAL STACK. `pnpm infra:*` from the repository root is the
+# supported workflow (see the root README); `scripts/infra.sh` always passes
+# `-p kazhal-review`. The name below is the DEFAULT when this file is used
+# without `-p`. It is not a lock: an explicit `-p <other>` (or
+# COMPOSE_PROJECT_NAME) still overrides it and would create a separate project
+# with its own empty volumes. Do not do that for normal local development.
+name: kazhal-review
+
+services:
+  postgres:
+    container_name: kazhal-review-postgres
+
+    environment:
+      POSTGRES_DB: kazhal_review
+      POSTGRES_USER: kazhal_review
+      # Throwaway. Reachable only from 127.0.0.1 on this machine, on a server
+      # whose every database is disposable by construction. Not a production
+      # credential and must never be reused as one.
+      POSTGRES_PASSWORD: kazhal_review_local_only
+
+    ports: !override
+      - "127.0.0.1:55433:5432"
+
+    volumes:
+      # Appended to the base `postgres-data` volume, not replacing it.
+      # Read-only: the container only ever reads these scripts.
+      - ./docker/review-initdb:/docker-entrypoint-initdb.d:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kazhal_review -d kazhal_review"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  redis:
+    container_name: kazhal-review-redis
+    ports: !override
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    container_name: kazhal-review-minio
+    ports: !override
+      - "127.0.0.1:59000:9000"
+      - "127.0.0.1:59001:9001"
+    environment:
+      MINIO_ROOT_USER: kazhal_review
+      MINIO_ROOT_PASSWORD: kazhal_review_local_only
+
+  # The bucket initialiser needs the SAME credentials as the server it talks
+  # to, so it is overridden alongside it. It reaches MinIO over the compose
+  # network on port 9000 and therefore needs no port remapping of its own —
+  # only a container name, for the same global-namespace reason as the rest.
+  minio-init:
+    container_name: kazhal-review-minio-init
+    environment:
+      MINIO_ROOT_USER: kazhal_review
+      MINIO_ROOT_PASSWORD: kazhal_review_local_only
+      MINIO_BUCKET: ${MINIO_BUCKET:-kazhal-products}

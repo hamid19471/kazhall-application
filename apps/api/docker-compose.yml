@@ -1,0 +1,154 @@
+# ===========================================================================
+# FOR NORMAL LOCAL DEVELOPMENT, USE `pnpm infra:*`, NOT THIS FILE DIRECTLY.
+#
+# The canonical local stack is this file PLUS docker-compose.review.yml, under
+# the `kazhal-review` project. From the repository root:
+#
+#   pnpm infra:up      start PostgreSQL 55433, Redis 56379, MinIO 59000/59001
+#   pnpm infra:ps      status
+#   pnpm infra:stop    stop, keeping all data
+#
+# Those scripts always select `kazhal-review`. Nothing in this file can stop a
+# manual `docker compose -f docker-compose.yml ...` from bypassing them: run on
+# its own, this file creates a SEPARATE Compose project named after this
+# directory (`api`), with its own empty volumes on 5432/6379/9000 — data the
+# API is not configured to use. The commands below are kept only for a machine
+# that deliberately runs the base stack instead.
+#
+# ---------------------------------------------------------------------------
+# BASE STACK
+#
+#   start        docker compose -f docker-compose.yml up -d
+#   health       docker compose -f docker-compose.yml ps
+#   stop         docker compose -f docker-compose.yml stop
+#   remove       docker compose -f docker-compose.yml down        (keeps data)
+#   wipe         docker compose -f docker-compose.yml down -v     (DESTROYS data)
+#
+# On a machine where 5432 / 6379 / 9000 / 9001 are already taken, use the
+# override that remaps every port to a free loopback-only number:
+#
+#   docker compose -p kazhal-review \
+#     -f docker-compose.yml -f docker-compose.review.yml up -d
+#
+# CREDENTIALS ARE PLACEHOLDERS FOR LOCAL USE ONLY. Every one of them can be
+# overridden from the environment, and none is a production secret. Nothing in
+# this file may ever be pointed at a real bucket or a real database.
+# ===========================================================================
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: kazhal-postgres
+
+    environment:
+      POSTGRES_DB: kazhal
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 123456
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+
+  redis:
+    image: redis:8
+    container_name: kazhal-redis
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis-data:/data
+
+
+  # -------------------------------------------------------------------------
+  # OBJECT STORAGE for product images.
+  #
+  # PINNED BY RELEASE TAG, deliberately. `minio/minio:latest` is a moving
+  # target: the server's own admin API and the `mc` client negotiate a version,
+  # and a silent upgrade of one and not the other is exactly the kind of
+  # breakage that costs an afternoon and is impossible to reproduce later. A
+  # pinned tag makes `up` produce the same bytes on every machine and in six
+  # months.
+  # -------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: kazhal-minio
+
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kazhal_local}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kazhal_local_only}
+
+    volumes:
+      - minio-data:/data
+
+    command: server /data --console-address ":9001"
+
+    # `mc ready` asks the server whether it is prepared to serve S3 traffic,
+    # which is what the init step and the API actually need to know. A plain
+    # TCP probe would go green while the object layer was still initialising.
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+
+  # -------------------------------------------------------------------------
+  # ONE-SHOT BUCKET INITIALISATION.
+  #
+  # WHY THIS EXISTS AS A SERVICE AND NOT AS APPLICATION CODE. The API must
+  # never create a bucket in response to an HTTP request: in production that
+  # turns a typo in S3_BUCKET into a brand-new empty bucket that silently
+  # accepts uploads nobody can find, and it requires handing the application
+  # credentials that can create buckets. Bucket provisioning is a deployment
+  # act. Locally, that act is this container; in production it is whatever
+  # provisions the real bucket.
+  #
+  # IDEMPOTENT. `mc mb --ignore-existing` succeeds whether or not the bucket is
+  # there, so `up` can be run any number of times. It exits 0 and stays exited;
+  # `docker compose ps` shows it as `exited (0)`, which is success, not a crash.
+  #
+  # NOT DESTRUCTIVE. It creates; it never removes a bucket, an object or a
+  # policy it did not just create, and it touches nothing outside its own
+  # bucket.
+  # -------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    container_name: kazhal-minio-init
+
+    depends_on:
+      minio:
+        condition: service_healthy
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-kazhal_local}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-kazhal_local_only}
+      MINIO_BUCKET: ${MINIO_BUCKET:-kazhal-products}
+
+    # `set -e` so a genuine failure (bad credentials, unreachable server) fails
+    # the service instead of leaving a half-provisioned bucket behind a green
+    # exit code.
+    entrypoint: >
+      /bin/sh -c '
+        set -e;
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD";
+        mc mb --ignore-existing "local/$$MINIO_BUCKET";
+        mc anonymous set download "local/$$MINIO_BUCKET";
+        echo "bucket ready: $$MINIO_BUCKET";
+      '
+
+    restart: "no"
+
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

@@ -1,0 +1,15 @@
+{
+  "extends": "@repo/typescript-config/react-library.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "strictNullChecks": true,
+    "paths": {
+      "@kazhal/api-client": ["../api-client/src/index.ts"],
+      "@kazhal/api-client/*": ["../api-client/src/*"],
+      "@kazhal/ui": ["./src/index.ts"],
+      "@kazhal/ui/*": ["./src/*"]
+    }
+  },
+  "include": ["src", "../api-client/src"],
+  "exclude": ["node_modules", "dist"]
+}
