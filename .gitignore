@@ -85,3 +85,7 @@ apps/*/public/fonts/
 # Misc
 .DS_Store
 *.pem
+
+# Local agent workspaces
+.claude/
+.freebuff/
