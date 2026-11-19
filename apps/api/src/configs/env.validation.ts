@@ -14,6 +14,7 @@ import {
   Min,
   validateSync,
 } from 'class-validator';
+import { resolveOtpSmsConfig } from '../modules/auth/services/kavenegar.config';
 
 /**
  * Boot-time environment validation.
@@ -261,15 +262,22 @@ export function validateEnv(
     forbidUnknownValues: false,
   });
 
-  if (errors.length > 0) {
-    const details = errors
-      .map((error) => {
+  // OTP SMS delivery. Validated by the same pure resolver the sender uses, so
+  // the boot check and the runtime cannot disagree. Its messages name the
+  // variable and the problem only — KAVENEGAR_LOOKUP_URL contains the API key.
+  const otpSms = resolveOtpSmsConfig(withDefaults);
+  const otpSmsIssues = otpSms.ok ? [] : otpSms.issues;
+
+  if (errors.length > 0 || otpSmsIssues.length > 0) {
+    const details = [
+      ...errors.map((error) => {
         const messages = Object.values(error.constraints ?? {});
         return `  - ${error.property}: ${
           messages.length ? messages.join('; ') : 'invalid value'
         }`;
-      })
-      .join('\n');
+      }),
+      ...otpSmsIssues.map((issue) => `  - ${issue}`),
+    ].join('\n');
 
     throw new Error(
       `Invalid environment configuration — refusing to start.\n${details}\n` +

@@ -32,3 +32,75 @@ describe('optional production bootstrap credentials', () => {
     ).toThrow(/BOOTSTRAP_ADMIN_PASSWORD/);
   });
 });
+
+describe('OTP SMS delivery configuration', () => {
+  const FAKE_KEY = 'FAKE-KEY-not-a-real-kavenegar-key-0000';
+  const LOOKUP = `https://api.kavenegar.com/v1/${FAKE_KEY}/verify/lookup.json`;
+
+  it('boots with the log driver when nothing is set (existing deployments)', () => {
+    expect(() => validateEnv({ ...REQUIRED })).not.toThrow();
+  });
+
+  it('treats the empty Compose defaults as the log driver', () => {
+    expect(() =>
+      validateEnv({
+        ...REQUIRED,
+        OTP_SMS_DRIVER: 'log',
+        KAVENEGAR_LOOKUP_URL: '',
+        KAVENEGAR_OTP_TEMPLATE: '',
+      }),
+    ).not.toThrow();
+  });
+
+  it('boots with a complete Kavenegar configuration', () => {
+    expect(() =>
+      validateEnv({
+        ...REQUIRED,
+        NODE_ENV: 'production',
+        OTP_SMS_DRIVER: 'kavenegar',
+        KAVENEGAR_LOOKUP_URL: LOOKUP,
+        KAVENEGAR_OTP_TEMPLATE: 'kazhalLoginVerify',
+      }),
+    ).not.toThrow();
+  });
+
+  it('refuses to boot when Kavenegar is selected without credentials', () => {
+    expect(() =>
+      validateEnv({ ...REQUIRED, OTP_SMS_DRIVER: 'kavenegar' }),
+    ).toThrow(/KAVENEGAR_LOOKUP_URL is MISSING/);
+  });
+
+  it('does not require a template (defaults to the existing loginVerify)', () => {
+    const env = validateEnv({
+      ...REQUIRED,
+      NODE_ENV: 'production',
+      OTP_SMS_DRIVER: 'kavenegar',
+      KAVENEGAR_LOOKUP_URL: LOOKUP,
+      KAVENEGAR_OTP_TEMPLATE: '',
+    });
+    expect(env.OTP_SMS_DRIVER).toBe('kavenegar');
+  });
+
+  it('refuses an unknown driver', () => {
+    expect(() =>
+      validateEnv({ ...REQUIRED, OTP_SMS_DRIVER: 'sms-ir' }),
+    ).toThrow(/OTP_SMS_DRIVER/);
+  });
+
+  it('never prints the API key when refusing a bad endpoint', () => {
+    let message = '';
+    try {
+      validateEnv({
+        ...REQUIRED,
+        NODE_ENV: 'production',
+        OTP_SMS_DRIVER: 'kavenegar',
+        KAVENEGAR_LOOKUP_URL: LOOKUP.replace('https', 'http'),
+        KAVENEGAR_OTP_TEMPLATE: 'kazhalLoginVerify',
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('KAVENEGAR_LOOKUP_URL is INSECURE');
+    expect(message).not.toContain(FAKE_KEY);
+  });
+});

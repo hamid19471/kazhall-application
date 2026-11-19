@@ -44,6 +44,11 @@ export abstract class OtpSender {
    * been issued at that point, so the caller must be told the SMS did not go
    * out rather than being shown "code sent".
    *
+   * Implementations SHOULD reject with an {@link OtpDeliveryError} so that
+   * `OtpService` can tell a definitive "not sent" (the challenge and its resend
+   * cooldown are released) from an ambiguous outcome (both are kept). Any other
+   * rejection is treated as ambiguous.
+   *
    * CONTRACT FOR EVERY IMPLEMENTATION: never log, trace, or attach `code` to
    * an error, a metric or a span. An OTP in an application log is a one-line
    * account takeover for anyone with log access, and logs are routinely
@@ -53,8 +58,38 @@ export abstract class OtpSender {
 }
 
 /**
- * The default binding: no SMS gateway is integrated yet, so this records that a
- * code was ISSUED and drops the code itself.
+ * How sure the sender is that the SMS did NOT go out.
+ *
+ *   NOT_SENT  — proven: the request never reached the provider, or the provider
+ *               explicitly refused it. Nothing can arrive on the phone.
+ *   UNCERTAIN — the provider may have accepted it (timeout after the request was
+ *               written, 5xx, unreadable answer). The SMS may still arrive.
+ */
+export type OtpDeliveryOutcome = 'NOT_SENT' | 'UNCERTAIN';
+
+/**
+ * The typed failure every `OtpSender` should reject with.
+ *
+ * `reason` and `providerStatus` are LOG-SAFE by construction: a short constant
+ * and a provider's numeric status. Never put the code, the mobile number, an
+ * endpoint URL or a provider response body in here.
+ */
+export class OtpDeliveryError extends Error {
+  constructor(
+    readonly outcome: OtpDeliveryOutcome,
+    readonly reason: string,
+    readonly providerStatus: number | null = null,
+  ) {
+    super(`OTP delivery ${outcome}: ${reason}`);
+    this.name = 'OtpDeliveryError';
+  }
+}
+
+/**
+ * The `log` driver: delivers nothing. Outside production it records that a
+ * code was ISSUED and drops the code itself (local development and review use
+ * the review-login door or an overridden sender). In production it refuses —
+ * see `send`.
  *
  * It is deliberately not a silent no-op — without the trace there is no way to
  * tell a delivery failure from a rate-limit refusal when a customer calls in —
@@ -75,9 +110,23 @@ export class LoggingOtpSender extends OtpSender {
     // the contract on OtpSender.send.
     void code;
 
-    if (this.configService.get<string>('NODE_ENV') !== 'production') {
-      this.logger.debug(`OTP issued for ${maskMobile(mobile)}`);
+    // IN PRODUCTION THIS DRIVER NEVER REPORTS SUCCESS. It delivers nothing, so
+    // answering "code sent" would strand every customer on a code that cannot
+    // arrive. It stays selectable (`OTP_SMS_DRIVER=log`) only as an emergency
+    // ROLLBACK that switches SMS login OFF without taking the API down: every
+    // `send-otp` answers 503, the challenge is released by `OtpService` (no
+    // live code, no 60s cooldown), the attempt still counts toward the hourly
+    // per-number and per-IP limits, and admin/POS password login is unaffected.
+    if (this.configService.get<string>('NODE_ENV') === 'production') {
+      this.logger.warn(
+        `event=otp_sms_delivery outcome=NOT_SENT reason=DRIVER_DISABLED mobile=${maskMobile(mobile)}`,
+      );
+      return Promise.reject(
+        new OtpDeliveryError('NOT_SENT', 'DRIVER_DISABLED'),
+      );
     }
+
+    this.logger.debug(`OTP issued for ${maskMobile(mobile)}`);
     return Promise.resolve();
   }
 }

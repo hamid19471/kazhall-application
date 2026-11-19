@@ -26,6 +26,21 @@ export const AuthMessages = {
    * only so a non-HTTP caller of the service gets a named 400 rather than a 500.
    */
   INVALID_MOBILE: 'A valid mobile number is required.',
+  /**
+   * 503 `OTP_DELIVERY_FAILED`: the SMS provably did not go out (provider
+   * refusal, connection never made). No code is live and no cooldown applies,
+   * so the customer may request again immediately. The provider's own status
+   * is logged server-side, never returned.
+   */
+  OTP_DELIVERY_FAILED:
+    'The verification code could not be sent. Please try again.',
+  /**
+   * 503 `OTP_DELIVERY_UNCERTAIN`: the provider did not confirm, but the SMS may
+   * still arrive. The code stays valid and the resend cooldown holds
+   * (`retryAfterSeconds`).
+   */
+  OTP_DELIVERY_UNCERTAIN:
+    'The verification code may be delayed. If it does not arrive, request a new one in a minute.',
   REGISTER_SUCCESS: 'User registered successfully',
   TOKEN_REFRESHED: 'Token refreshed successfully',
   INVALID_CREDENTIALS: 'Invalid username or password.',

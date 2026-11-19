@@ -3,9 +3,14 @@ import type { Response } from 'supertest';
 
 import UserRoleEnum from 'src/modules/user/enums/user-role.enum';
 import { AuthMessages } from 'src/common/constants/auth.messages';
-import { OtpSender } from 'src/modules/auth/services/otp-sender';
+import {
+  OtpDeliveryError,
+  OtpSender,
+} from 'src/modules/auth/services/otp-sender';
 import {
   OTP_ERROR_COOLDOWN,
+  OTP_ERROR_DELIVERY_FAILED,
+  OTP_ERROR_DELIVERY_UNCERTAIN,
   OTP_ERROR_INVALID,
   OTP_ERROR_RATE_LIMITED,
 } from 'src/modules/auth/services/otp.service';
@@ -64,10 +69,28 @@ import { createUser, seedRoles } from './setup/seed-helpers';
 /** Capturing `OtpSender`. See the header: this is the production port, overridden. */
 class CapturingOtpSender extends OtpSender {
   readonly sent: Array<{ mobile: string; code: string }> = [];
+  /** Queued delivery failures; each send consumes one, if any are queued. */
+  readonly failures: OtpDeliveryError[] = [];
 
   send(mobile: string, code: string): Promise<void> {
+    // Recorded even when the delivery then "fails", so a test can prove that
+    // the undelivered code is dead.
     this.sent.push({ mobile, code });
-    return Promise.resolve();
+    const failure = this.failures.shift();
+    if (!failure) return Promise.resolve();
+    // Runs while THIS send is still "in flight" at the provider, so a test can
+    // race a real competing request against the failure handling.
+    const hook = this.beforeFailure;
+    this.beforeFailure = undefined;
+    return (hook ? hook() : Promise.resolve()).then(() =>
+      Promise.reject(failure),
+    );
+  }
+
+  beforeFailure: (() => Promise<void>) | undefined;
+
+  failNext(...failures: OtpDeliveryError[]): void {
+    this.failures.push(...failures);
   }
 
   /** The code most recently delivered for `mobile`. Throws if none. */
@@ -84,6 +107,8 @@ class CapturingOtpSender extends OtpSender {
 
   clear(): void {
     this.sent.length = 0;
+    this.failures.length = 0;
+    this.beforeFailure = undefined;
   }
 }
 
@@ -454,6 +479,200 @@ describe('OTP hardening', () => {
   // ==========================================================================
   // 4. Rate limits
   // ==========================================================================
+
+  describe('SMS delivery failure', () => {
+    const notSent = () =>
+      new OtpDeliveryError('NOT_SENT', 'PROVIDER_REJECTED', 411);
+    const uncertain = () => new OtpDeliveryError('UNCERTAIN', 'TIMEOUT');
+
+    it('definitive failure: 503, the undelivered code is dead, and an immediate resend works', async () => {
+      const mobile = freshMobile();
+      sender.failNext(notSent());
+
+      const failed = await sendOtp(mobile);
+      expect(failed.status).toBe(503);
+      expect(failed.body.error).toBe(OTP_ERROR_DELIVERY_FAILED);
+      expect(failed.body.details.retryAfterSeconds).toBe(0);
+      const undelivered = sender.codeFor(mobile);
+
+      // No 60-second wait: the very next request is accepted.
+      await sendOtp(mobile).expect(201);
+      const delivered = sender.codeFor(mobile);
+
+      // The failed attempt STILL COUNTS toward the hourly budget.
+      expect((await requireChallenge(mobile)).sendCount).toBe(2);
+
+      if (undelivered !== delivered) {
+        const stale = await verifyOtp(mobile, undelivered);
+        expect(stale.status).toBe(401);
+      }
+      expect((await verifyOtp(mobile, delivered)).status).toBe(201);
+    });
+
+    it('definitive failure: the released code cannot be verified, even before any resend', async () => {
+      const mobile = freshMobile();
+      sender.failNext(notSent());
+      await sendOtp(mobile).expect(503);
+
+      const attempt = await verifyOtp(mobile, sender.codeFor(mobile));
+      expect(attempt.status).toBe(401);
+      expect(attempt.body.error).toBe(OTP_ERROR_INVALID);
+      // Indistinguishable from any other failure, and no session was issued.
+      expect(attempt.headers['set-cookie']).toBeUndefined();
+    });
+
+    it('ambiguous failure: 503, the cooldown holds, and the possibly-delivered code still works', async () => {
+      const mobile = freshMobile();
+      sender.failNext(uncertain());
+
+      const failed = await sendOtp(mobile);
+      expect(failed.status).toBe(503);
+      expect(failed.body.error).toBe(OTP_ERROR_DELIVERY_UNCERTAIN);
+      expect(failed.body.details.retryAfterSeconds).toBe(
+        OTP_RESEND_COOLDOWN_SECONDS,
+      );
+
+      // Conservative: no second, billed SMS while the first may be in flight.
+      const resend = await sendOtp(mobile);
+      expect(resend.status).toBe(429);
+      expect(resend.body.error).toBe(OTP_ERROR_COOLDOWN);
+      expect(sender.countFor(mobile)).toBe(1);
+
+      // A late SMS is still honoured.
+      expect((await verifyOtp(mobile, sender.codeFor(mobile))).status).toBe(
+        201,
+      );
+    });
+
+    it('ambiguous failure: the code still expires on its normal TTL', async () => {
+      const mobile = freshMobile();
+      sender.failNext(uncertain());
+      await sendOtp(mobile).expect(503);
+
+      await expireCode(mobile);
+      expect((await verifyOtp(mobile, sender.codeFor(mobile))).status).toBe(
+        401,
+      );
+    });
+
+    it(`definitive failures still exhaust the per-mobile budget: send ${OTP_MAX_SENDS_PER_MOBILE + 1} is refused with 429`, async () => {
+      const mobile = freshMobile();
+      sender.failNext(
+        ...Array.from({ length: OTP_MAX_SENDS_PER_MOBILE }, notSent),
+      );
+
+      for (let i = 0; i < OTP_MAX_SENDS_PER_MOBILE; i += 1) {
+        await sendOtp(mobile).expect(503);
+      }
+
+      const refused = await sendOtp(mobile);
+      expect(refused.status).toBe(429);
+      expect(refused.body.error).toBe(OTP_ERROR_RATE_LIMITED);
+      // The refused request never reached the provider.
+      expect(sender.countFor(mobile)).toBe(OTP_MAX_SENDS_PER_MOBILE);
+    });
+
+    it('concurrent replacement: a NOT_SENT whose challenge was replaced mid-flight does not release the NEW one or advertise resend', async () => {
+      const mobile = freshMobile();
+      sender.failNext(notSent());
+      // While the first send is at the provider, a second, real issue replaces
+      // the challenge (its cooldown is lapsed artificially, exactly as
+      // `clearCooldown` does elsewhere in this suite).
+      sender.beforeFailure = async () => {
+        await clearCooldown(mobile);
+        await sendOtp(mobile).expect(201);
+      };
+
+      const failed = await sendOtp(mobile);
+      expect(failed.status).toBe(503);
+      expect(failed.body.error).toBe(OTP_ERROR_DELIVERY_FAILED);
+      // Zero rows matched, so NO immediate resend is advertised...
+      expect(failed.body.details.retryAfterSeconds).toBeGreaterThan(0);
+      expect(failed.body.details.retryAfterSeconds).toBeLessThanOrEqual(
+        OTP_RESEND_COOLDOWN_SECONDS,
+      );
+      // ...and that is the truth: the newer challenge's cooldown still holds.
+      const resend = await sendOtp(mobile);
+      expect(resend.status).toBe(429);
+      expect(resend.body.error).toBe(OTP_ERROR_COOLDOWN);
+
+      // The newer, delivered code was NOT expired by the failed call.
+      const row = await requireChallenge(mobile);
+      expect(row.sendCount).toBe(2);
+      expect((await verifyOtp(mobile, sender.codeFor(mobile))).status).toBe(
+        201,
+      );
+    });
+
+    it('concurrent consumption: a NOT_SENT whose code was consumed mid-flight keeps the consumption and the cooldown', async () => {
+      const mobile = freshMobile();
+      sender.failNext(notSent());
+      let session: Response | undefined;
+      sender.beforeFailure = async () => {
+        session = await verifyOtp(mobile, sender.codeFor(mobile));
+      };
+
+      const failed = await sendOtp(mobile);
+      expect(session?.status).toBe(201);
+      expect(failed.status).toBe(503);
+      expect(failed.body.error).toBe(OTP_ERROR_DELIVERY_FAILED);
+      expect(failed.body.details.retryAfterSeconds).toBeGreaterThan(0);
+
+      // One-time consumption is intact: the row stays consumed, and a replay
+      // of the same code buys nothing.
+      const row = await requireChallenge(mobile);
+      expect(row.consumedAt).not.toBeNull();
+      expect((await verifyOtp(mobile, sender.codeFor(mobile))).status).toBe(
+        401,
+      );
+      // And the cooldown was not lifted behind the customer's back.
+      expect((await sendOtp(mobile)).status).toBe(429);
+    });
+
+    it('a successful release is visible in the row: code expired, cooldown lifted, counters untouched', async () => {
+      const mobile = freshMobile();
+      sender.failNext(notSent());
+      await sendOtp(mobile).expect(503);
+
+      const [row] = await testApp.dataSource.query<
+        Array<{
+          expired: boolean;
+          resendOpen: boolean;
+          sendCount: number;
+          attempts: number;
+          consumedAt: Date | null;
+        }>
+      >(
+        `SELECT "expiresAt" <= now() AS expired,
+                "resendAvailableAt" <= now() AS "resendOpen",
+                "sendCount", attempts, "consumedAt"
+           FROM otp_challenges WHERE mobile = $1`,
+        [mobile],
+      );
+      expect(row).toEqual({
+        expired: true,
+        resendOpen: true,
+        sendCount: 1,
+        attempts: 0,
+        consumedAt: null,
+      });
+    });
+
+    it('releasing a failed challenge does not reset the wrong-guess counter of a live one', async () => {
+      // A failed send followed by a good one: the live challenge carries the
+      // normal attempt bound, and the bound still kills it.
+      const mobile = freshMobile();
+      sender.failNext(notSent());
+      await sendOtp(mobile).expect(503);
+      await sendOtp(mobile).expect(201);
+      const code = sender.codeFor(mobile);
+
+      for (let i = 0; i < OTP_MAX_VERIFY_ATTEMPTS; i += 1) {
+        await verifyOtp(mobile, wrongCode(code)).expect(401);
+      }
+      expect((await verifyOtp(mobile, code)).status).toBe(401);
+    });
+  });
 
   describe('send rate limit (per normalized mobile)', () => {
     it(`refuses send number ${OTP_MAX_SENDS_PER_MOBILE + 1} in the window even with the cooldown elapsed`, async () => {

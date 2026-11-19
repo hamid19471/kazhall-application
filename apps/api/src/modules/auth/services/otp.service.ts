@@ -3,6 +3,8 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -13,7 +15,7 @@ import * as crypto from 'crypto';
 import { AuthMessages } from 'src/common/constants/auth.messages';
 import { RedisService } from 'src/database/redis.service';
 import { OtpChallenge } from '../entities/otp-challenge.entity';
-import { OtpSender } from './otp-sender';
+import { maskMobile, OtpDeliveryError, OtpSender } from './otp-sender';
 import {
   OTP_CODE_LENGTH,
   OTP_IP_WINDOW_SECONDS,
@@ -29,6 +31,10 @@ import {
 /** Machine-readable `error` codes. Stable contract — clients switch on these. */
 export const OTP_ERROR_COOLDOWN = 'OTP_COOLDOWN';
 export const OTP_ERROR_RATE_LIMITED = 'OTP_SEND_RATE_LIMITED';
+/** 503: the SMS provably did not go out; the customer may resend at once. */
+export const OTP_ERROR_DELIVERY_FAILED = 'OTP_DELIVERY_FAILED';
+/** 503: the SMS may still arrive; the code stays valid and the cooldown holds. */
+export const OTP_ERROR_DELIVERY_UNCERTAIN = 'OTP_DELIVERY_UNCERTAIN';
 export const OTP_ERROR_INVALID = 'OTP_INVALID';
 
 interface IssuedRow {
@@ -102,6 +108,8 @@ interface ConsumeRow {
  */
 @Injectable()
 export class OtpService {
+  private readonly logger = new Logger(OtpService.name);
+
   constructor(
     @InjectRepository(OtpChallenge)
     private readonly challenges: Repository<OtpChallenge>,
@@ -139,6 +147,7 @@ export class OtpService {
     // Generated BEFORE the write because its hash is part of the row; if the
     // upsert refuses, this code is discarded and never delivered.
     const code = this.generateCode();
+    const codeHash = this.hashCode(mobile, code);
 
     // No CTE wrapper needed here (unlike `consume()` below): PostgreSQL reports
     // the command tag of `INSERT ... ON CONFLICT DO UPDATE` as INSERT, so
@@ -181,7 +190,7 @@ export class OtpService {
        RETURNING "id", "expiresAt", "sendCount"`,
       [
         mobile,
-        this.hashCode(mobile, code),
+        codeHash,
         OTP_MAX_VERIFY_ATTEMPTS,
         OTP_RESEND_COOLDOWN_SECONDS,
         OTP_TTL_SECONDS,
@@ -200,7 +209,157 @@ export class OtpService {
 
     // The single exit path for the plaintext code. Nothing else in this class
     // touches it after this line, and it is never logged.
-    await this.sender.send(mobile, code);
+    try {
+      await this.sender.send(mobile, code);
+    } catch (error) {
+      throw await this.handleDeliveryFailure(mobile, codeHash, error);
+    }
+  }
+
+  /**
+   * Decides what a failed delivery leaves behind, and what the caller is told.
+   *
+   * The challenge row was committed (cooldown armed, send counted) BEFORE the
+   * provider was called, because issuing first is what makes the cooldown and
+   * the send budget race-free. What happens to it now depends on how sure the
+   * sender is that nothing reached the handset:
+   *
+   * NOT_SENT — proven. The code cannot arrive, so holding the customer to the
+   *   60s cooldown buys nothing. The challenge is RELEASED: its code is expired
+   *   (it was never delivered, so it must not stay guessable) and its resend
+   *   cooldown is lifted. The send STAYS COUNTED in the hourly per-number
+   *   window, and the per-IP counter is untouched, so the hourly ceilings — and
+   *   with them the guessing arithmetic in otp.policy.ts — are exactly as
+   *   before. A burst of definitive failures therefore ends in the same 429 a
+   *   burst of successes would.
+   *
+   * UNCERTAIN (or any error that is not an `OtpDeliveryError`) — the SMS may
+   *   still arrive. Nothing is released: the code stays valid for its normal
+   *   TTL so a late SMS still works, and the cooldown stays so a second, billed
+   *   SMS cannot be triggered while the first may be in flight.
+   *
+   * The release is conditional on `codeHash`, so it can only ever touch the
+   * challenge THIS call issued: if a concurrent request has since replaced it,
+   * or it has been consumed, nothing changes — and then the 503 still says
+   * OTP_DELIVERY_FAILED (the SMS was not sent) but carries the row's real,
+   * non-zero cooldown instead of advertising an immediate resend.
+   */
+  private async handleDeliveryFailure(
+    mobile: string,
+    codeHash: string,
+    error: unknown,
+  ): Promise<HttpException> {
+    const notSent =
+      error instanceof OtpDeliveryError && error.outcome === 'NOT_SENT';
+
+    if (!notSent) {
+      return new ServiceUnavailableException({
+        message: AuthMessages.OTP_DELIVERY_UNCERTAIN,
+        error: OTP_ERROR_DELIVERY_UNCERTAIN,
+        retryAfterSeconds: OTP_RESEND_COOLDOWN_SECONDS,
+      });
+    }
+
+    // The error CODE reports the delivery fact (this SMS was provably not
+    // sent); `retryAfterSeconds` reports the resend fact, which depends on
+    // whether the release below actually changed this call's own row.
+    if (await this.releaseUndelivered(mobile, codeHash)) {
+      return this.deliveryFailed(0);
+    }
+
+    // Not released — zero rows matched (the challenge was replaced by a newer
+    // issue or consumed in the meantime) or the statement failed. The row's
+    // cooldown is untouched, so an immediate resend must NOT be advertised.
+    // `retryAfterSeconds: 0` is reserved for "this call released it".
+    return this.deliveryFailed(
+      Math.max(1, await this.remainingCooldownSeconds(mobile)),
+    );
+  }
+
+  /**
+   * Expires this call's undelivered code and lifts its cooldown. Returns true
+   * ONLY when exactly this call's row was changed.
+   *
+   * WHY THE CTE. TypeORM's PostgreSQL `query()` returns `raw.rows` for SELECT
+   * and INSERT but `[rows, rowCount]` for a bare UPDATE (PostgresQueryRunner,
+   * `case "UPDATE": result.raw = [raw.rows, raw.rowCount]`), so the result of
+   * a bare UPDATE cannot be read as a row list — and ignoring it entirely meant
+   * a zero-row update was reported as a release. Wrapping the UPDATE in a
+   * data-modifying CTE (exactly as `consume()` does) returns the plain row
+   * list, so "released" is decided by `rows.length === 1` and nothing else.
+   * It is still ONE statement under the row lock, so it serialises with
+   * `consume()` and with a concurrent issue's upsert.
+   *
+   * The guard `"codeHash" = $2 AND "consumedAt" IS NULL` confines it to the
+   * challenge THIS call issued and has not been used: a newer challenge (other
+   * hash) or a consumed one is never touched. `sendCount`, `windowStartedAt`
+   * and `attempts` are not written, so no rate limit or guess budget moves.
+   */
+  private async releaseUndelivered(
+    mobile: string,
+    codeHash: string,
+  ): Promise<boolean> {
+    try {
+      const rows = await this.challenges.query<Array<{ id: number }>>(
+        `WITH released AS (
+           UPDATE "otp_challenges" SET
+             "expiresAt"         = now(),
+             "resendAvailableAt" = now(),
+             "updatedAt"         = now()
+           WHERE "mobile" = $1
+             AND "codeHash" = $2
+             AND "consumedAt" IS NULL
+           RETURNING "id"
+         )
+         SELECT "id" FROM released`,
+        [mobile, codeHash],
+      );
+      const released = Array.isArray(rows) && rows.length === 1;
+      if (!released) {
+        this.logger.warn(
+          `event=otp_challenge_release outcome=not_matched mobile=${maskMobile(mobile)}`,
+        );
+      }
+      return released;
+    } catch {
+      // Failing to release is the SAFE direction: the customer waits out the
+      // normal cooldown and the undelivered code expires on its own TTL.
+      this.logger.warn(
+        `event=otp_challenge_release outcome=failed mobile=${maskMobile(mobile)}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * The row's real remaining cooldown, read AFTER the decision purely to give
+   * an honest `retryAfterSeconds` (as `buildSendRefusal` does). Falls back to
+   * the full cooldown if it cannot be read.
+   */
+  private async remainingCooldownSeconds(mobile: string): Promise<number> {
+    try {
+      const [row] = await this.challenges.query<
+        Array<{ cooldownSeconds: number }>
+      >(
+        `SELECT GREATEST(0, CEIL(EXTRACT(EPOCH FROM
+                  ("resendAvailableAt" - now()))))::int AS "cooldownSeconds"
+           FROM "otp_challenges" WHERE "mobile" = $1`,
+        [mobile],
+      );
+      return typeof row?.cooldownSeconds === 'number'
+        ? row.cooldownSeconds
+        : OTP_RESEND_COOLDOWN_SECONDS;
+    } catch {
+      return OTP_RESEND_COOLDOWN_SECONDS;
+    }
+  }
+
+  private deliveryFailed(retryAfterSeconds: number): HttpException {
+    return new ServiceUnavailableException({
+      message: AuthMessages.OTP_DELIVERY_FAILED,
+      error: OTP_ERROR_DELIVERY_FAILED,
+      retryAfterSeconds,
+    });
   }
 
   /**

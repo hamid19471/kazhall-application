@@ -21,7 +21,8 @@ import { RbacService } from './services/rbac.service';
 import { CacheModule } from 'src/database/cache.module';
 import { OtpChallenge } from './entities/otp-challenge.entity';
 import { OtpService } from './services/otp.service';
-import { LoggingOtpSender, OtpSender } from './services/otp-sender';
+import { OtpSender } from './services/otp-sender';
+import { createOtpSender } from './services/otp-sender.factory';
 import { RealtimeModule } from 'src/modules/realtime/realtime.module';
 
 @Module({
@@ -89,8 +90,16 @@ import { RealtimeModule } from 'src/modules/realtime/realtime.module';
      * non-production only) and DISCARDS the code. Every implementation is bound
      * by the contract on `OtpSender.send`: never log, trace or attach the code
      * to an error, a metric or a span.
+     *
+     * Chosen by `OTP_SMS_DRIVER` (`log` when unset, so existing deployments are
+     * unchanged; `kavenegar` for real delivery). `validateEnv` has already
+     * refused to boot on an invalid Kavenegar configuration.
      */
-    { provide: OtpSender, useClass: LoggingOtpSender },
+    {
+      provide: OtpSender,
+      inject: [ConfigService],
+      useFactory: createOtpSender,
+    },
   ],
   exports: [RbacService, AuthService],
 })

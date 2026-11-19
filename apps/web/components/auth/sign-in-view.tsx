@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 
 import type { ApiError } from "@kazhal/api-client";
 import { isApiError } from "@kazhal/api-client";
@@ -15,6 +15,14 @@ import { FormError, Notice } from "@/components/common";
 import { CheckIcon, ShieldIcon } from "@/components/icons";
 import { useAppSession } from "@/components/providers";
 import { useCooldown, useSubmit } from "@/lib/hooks";
+import {
+  OTP_INSTRUCTIONS,
+  OTP_SENT_MESSAGE,
+  otpSendErrorMessage,
+  otpVerifyErrorMessage,
+} from "@/lib/otp-messages";
+import type { OtpMessage } from "@/lib/otp-messages";
+import { sendOtpFailureAction } from "@/lib/otp-send-errors";
 import { safeNextPath } from "@/lib/routes";
 
 /**
@@ -51,12 +59,14 @@ function focusCodeField(): void {
  * countdown below is started from the SERVER's figure and never from a number
  * this app made up.
  *
- * ## What this screen must never say
+ * ## What this screen may and may not say
  *
- * SMS delivery is not integrated (no provider has been chosen). So nothing here
- * claims a message was sent, delivered or is "on its way", and no code is ever
- * displayed or hinted at. The customer is told, in plain language, that the
- * request was registered and what to do if nothing arrives.
+ * "Sent" is said ONLY after the server answered success — which it does only
+ * once the SMS provider accepted the message. A send failure is reported
+ * exactly as the server classified it: `OTP_DELIVERY_FAILED` (nothing was
+ * sent) or `OTP_DELIVERY_UNCERTAIN` (not confirmed, may still arrive). No code
+ * is ever displayed or hinted at. Every customer-facing string comes from
+ * `lib/otp-messages.ts`, keyed by the API's machine-readable error codes.
  */
 export function SignInView({ next }: { next?: string }) {
   const api = useApi();
@@ -67,9 +77,10 @@ export function SignInView({ next }: { next?: string }) {
   const [mobile, setMobile] = useState("");
   const [code, setCode] = useState("");
   const [mobileError, setMobileError] = useState<string | undefined>(undefined);
-  const [sendError, setSendError] = useState<ApiError | undefined>(undefined);
-  const [verifyFailed, setVerifyFailed] = useState(false);
-  const [verifyError, setVerifyError] = useState<ApiError | undefined>(undefined);
+  const [sendError, setSendError] = useState<unknown>(undefined);
+  /** The code field is incomplete — caught here, before any request. */
+  const [codeIncomplete, setCodeIncomplete] = useState(false);
+  const [verifyError, setVerifyError] = useState<unknown>(undefined);
   const [requested, setRequested] = useState(false);
   const cooldown = useCooldown();
 
@@ -84,6 +95,9 @@ export function SignInView({ next }: { next?: string }) {
   const { run: send, isPending: isSending } = useSubmit(async () => {
     setSendError(undefined);
     setMobileError(undefined);
+    // "Sent" describes THIS request only; a failed resend must not sit under
+    // the success notice of an earlier one.
+    setRequested(false);
 
     const normalized = normalizeMobile(mobile);
     if (normalized === null) {
@@ -94,23 +108,28 @@ export function SignInView({ next }: { next?: string }) {
     try {
       await api.auth.sendOtp({ mobile: normalized });
       setRequested(true);
-      setVerifyFailed(false);
+      setCodeIncomplete(false);
+      setVerifyError(undefined);
       setStep("code");
       // The server's own 60-second per-number cooldown. Starting a local timer
       // here keeps the resend button honest between now and the next 429.
       cooldown.start(60);
       window.setTimeout(focusCodeField, 50);
     } catch (cause) {
+      // Every failure is shown, including a transport failure that never
+      // produced an HTTP status (`otpSendErrorMessage` covers that case).
+      setSendError(cause);
       if (isApiError(cause)) {
-        setSendError(cause);
-        // 429 → the ONLY source of a wait time is the server's own figure.
-        if (cause.status === 429 && cause.retryAfterSeconds !== undefined) {
-          cooldown.start(cause.retryAfterSeconds);
-        }
-        // A cooldown 429 still means a challenge may be live, so let them type
-        // the code rather than stranding them on the first step.
-        if (cause.status === 429 && cause.code === "OTP_COOLDOWN") {
+        // The ONLY source of a wait time is the server's own figure — see
+        // `sendOtpFailureAction` for every case. A cooldown 429 or an
+        // UNCERTAIN 503 means a code may be live (or still arriving), so let
+        // them type it rather than stranding them on the first step. A FAILED
+        // 503 with retryAfterSeconds=0 clears any countdown: resend is open.
+        const action = sendOtpFailureAction(cause);
+        if (action.cooldownSeconds !== undefined) cooldown.start(action.cooldownSeconds);
+        if (action.showCodeStep) {
           setStep("code");
+          window.setTimeout(focusCodeField, 50);
         }
       }
     }
@@ -118,12 +137,12 @@ export function SignInView({ next }: { next?: string }) {
 
   const { run: verify, isPending: isVerifying } = useSubmit(async () => {
     setVerifyError(undefined);
-    setVerifyFailed(false);
+    setCodeIncomplete(false);
 
     const normalized = normalizeMobile(mobile);
     const digits = toLatinDigits(code).replace(/\D/g, "");
     if (normalized === null || digits.length < 4) {
-      setVerifyFailed(true);
+      setCodeIncomplete(true);
       return;
     }
 
@@ -132,14 +151,12 @@ export function SignInView({ next }: { next?: string }) {
       refresh();
       router.replace(target);
     } catch (cause) {
-      if (isApiError(cause) && cause.status === 401) {
+      setVerifyError(cause);
+      if (isApiError(cause) && cause.code === "OTP_INVALID") {
         // The single, deliberately uninformative failure. Do not try to guess.
-        setVerifyFailed(true);
         setCode("");
         focusCodeField();
-        return;
       }
-      setVerifyError(isApiError(cause) ? cause : undefined);
     }
   });
 
@@ -174,7 +191,7 @@ export function SignInView({ next }: { next?: string }) {
             hint="می‌توانید شماره را با ارقام فارسی هم وارد کنید."
           />
 
-          <FormError error={sendError} />
+          <OtpNotice message={otpSendErrorMessage(sendError)} />
 
           <Button type="submit" size="lg" fullWidth isLoading={isSending} disabled={cooldown.active}>
             {cooldown.active
@@ -200,8 +217,9 @@ export function SignInView({ next }: { next?: string }) {
               onClick={() => {
                 setStep("mobile");
                 setCode("");
-                setVerifyFailed(false);
+                setCodeIncomplete(false);
                 setVerifyError(undefined);
+                setSendError(undefined);
               }}
             >
               تغییر شماره
@@ -209,9 +227,7 @@ export function SignInView({ next }: { next?: string }) {
           </div>
 
           {requested ? (
-            <Notice tone="info" icon={<CheckIcon className="size-5" />}>
-              <p>درخواست کد ورود برای این شماره ثبت شد.</p>
-            </Notice>
+            <OtpNotice message={OTP_SENT_MESSAGE} icon={<CheckIcon className="size-5" />} />
           ) : null}
 
           <Input
@@ -227,16 +243,13 @@ export function SignInView({ next }: { next?: string }) {
             placeholder="۶ رقم"
           />
 
-          {verifyFailed ? (
-            <Notice tone="danger" title="کد پذیرفته نشد">
-              <p>
-                این کد معتبر نیست یا دیگر قابل استفاده نیست. اگر کدی در دست ندارید، یک کد تازه
-                درخواست کنید.
-              </p>
-            </Notice>
-          ) : null}
-
-          <FormError error={verifyError} />
+          <OtpNotice
+            message={
+              codeIncomplete
+                ? otpVerifyErrorMessage({ status: 400, kind: "validation" })
+                : otpVerifyErrorMessage(verifyError)
+            }
+          />
 
           <Button type="submit" size="lg" fullWidth isLoading={isVerifying}>
             ورود
@@ -259,23 +272,33 @@ export function SignInView({ next }: { next?: string }) {
               : "درخواست کد تازه"}
           </Button>
 
-          <FormError error={sendError} />
+          <OtpNotice message={otpSendErrorMessage(sendError)} />
         </form>
       )}
 
       {/*
-        The honest note. SMS delivery is NOT integrated on this deployment, and
-        pretending otherwise would leave a customer waiting for a message that
-        is never coming. No code is shown, hinted at, or logged anywhere the
-        customer can reach.
+        How the code works. Deliberately claims nothing about THIS request —
+        whether a message was sent is said only by the notices above, from the
+        server's answer.
       */}
-      <p className="mt-6 rounded-md border border-warning/30 bg-warning-soft px-4 py-3 text-xs leading-relaxed text-ink">
-        ارسال پیامک روی این فروشگاه هنوز راه‌اندازی نشده است. اگر کدی دریافت نکردید، این ایراد از
-        شمارهٔ شما نیست — برای تکمیل ورود با پشتیبانی فروشگاه تماس بگیرید.
-      </p>
+      <ul className="mt-6 list-inside list-disc space-y-1 rounded-md border border-line bg-surface-muted px-4 py-3 text-xs leading-relaxed text-ink-muted">
+        {OTP_INSTRUCTIONS.map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
 
       {reviewLoginEnabled() ? <ReviewPasswordSignIn target={target} /> : null}
     </Card>
+  );
+}
+
+/** One OTP outcome, rendered with the tone its message carries. */
+function OtpNotice({ message, icon }: { message: OtpMessage | undefined; icon?: ReactNode }) {
+  if (!message) return null;
+  return (
+    <Notice tone={message.tone} title={message.title} {...(icon ? { icon } : {})}>
+      <p>{message.body}</p>
+    </Notice>
   );
 }
 
